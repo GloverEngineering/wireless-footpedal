@@ -3,7 +3,8 @@
         {
             "name": "windows-gcc-x64",
             "includePath": [
-                "${workspaceFolder}/**"
+                "${workspaceFolder}/**",
+                "C:/Users/Admin/.platformio/packages/framework-arduino-avr/libraries/**"
             ],
             "defines": [
                 "_DEBUG",

@@ -10,42 +10,52 @@
   #define CHANNEL_READ    123456789
   #define CHANNEL_WRITE   987654321
   #define PIN_SERVO       2
+  #define PIN_KNOB        A1
 
-  enum INPUT_MODE{
+  enum INPUT_MODE{ //declare enumeration type
      WIRELESS,
      WIRED,
      KNOB,
   };
   
-  INPUT_MODE mode;
-  int potentiometer[32];
-  int setpoint;
+  INPUT_MODE mode; //declare enum mode of type INPUT_MODE
+  int rx_input[32]; //potentiometer raw value receieved from transmitter, 0-1023
+  int knob_input; //potentiometer raw value from knob, 0-1023
+  int setpoint; //setpoint to send to controller via RC servo library
   
   RF24 RXRadio(PIN_RF_CE, PIN_RF_CS);
   Servo MotorController;
   
-  void ReadData()
+ bool ReadRx()
   {
+    bool rx_connection;
     uint16_t data_size;
     if (RXRadio.available()){
+      rx_connection=true;
       while(RXRadio.available()){
         data_size = RXRadio.getPayloadSize();
-        RXRadio.read(potentiometer, data_size);
+        RXRadio.read(rx_input, data_size);
       }
-      setpoint = map(potentiometer[0], 0, 1023, 0, 180);
-      MotorController.write(setpoint);
-      mode=WIRELESS;
       
       Serial.print("ReadData: ");
-      Serial.println(potentiometer[0]);
-      Serial.print("Setpoint Value: ");
-      Serial.println(setpoint);
+      Serial.println(rx_input[0]);
     }
     else{
       Serial.println("no data");
+      rx_connection=false;
       mode=KNOB;
+      rx_input[0] = 0;
     }
     Serial.println(mode);
+    return rx_connection;
+  }
+
+   bool ReadKnob()
+  {
+    int data;
+    data=analogRead(PIN_KNOB);
+    knob_input=data;
+    return 1;
   }
   
  
@@ -76,6 +86,30 @@ void setup() {
 
 void loop() {
   // put your main code here, to run repeatedly:
-  ReadData();
+  int map_max = 180;
+  int map_min = 0;
+  if(!ReadRx()){ //wireless is not connected
+    rx_input[0]=0; //set wireless signal to zero
+  }
+  ReadKnob();
+
+  if((mode == WIRELESS)){
+   
+    if((knob_input>255)){ //if the knob is higher than 25%, use it to set a maximum speed - Set the max speed the foot pedal scale
+      map_max = map(knob_input, 0, 1023, 0, 180);
+    }
+    else map_max=180;
+    setpoint = map(rx_input[0], 0, 1023, 0, map_max);
+  }
+
+  if((mode == KNOB)){
+    map_max=180;
+    setpoint = map(knob_input, 0, 1023, 0, map_max);
+  }
+
+  Serial.print("Setpoint Value: ");
+  Serial.println(setpoint);
+  MotorController.write(setpoint);
+  mode=WIRELESS;
   delay(20);
 }
