@@ -11,11 +11,11 @@
   #define POT_PIN         A0
 
 
-  RF24 FPRadio(PIN_RF_CE, PIN_RF_CS);
-  bool radioReady = false;
+  RF24 FPRadio(PIN_RF_CE, PIN_RF_CS); //rf radio object
+  bool radioReady = false; //flag
 
-  int setpoint;
-  double pot;
+  int setpoint; //analog setpoint 0-1023
+  int pot_input; //raw value
   
   void WriteData(int setpoint)
   {
@@ -25,22 +25,16 @@
     Serial.println(setpoint);
     
   }
-  void SelfTest()
+
+int ReadInput()
   {
-    FPRadio.begin();
-    FPRadio.setAddressWidth(5);
-    FPRadio.openReadingPipe(0, 0x1212121212LL);
-    FPRadio.openReadingPipe(1, 0x3434343431LL);
-    FPRadio.openReadingPipe(2, 0x3434343432LL);
-    FPRadio.openReadingPipe(3, 0x3434343433LL);
-    FPRadio.openReadingPipe(4, 0x3434343434LL);
-    FPRadio.openReadingPipe(5, 0x3434343435LL);
-    FPRadio.setChannel(115);            //115 band above WIFI signals
-    FPRadio.setPALevel(RF24_PA_MAX);    //MIN power low rage
-    FPRadio.setDataRate(RF24_1MBPS) ;   //Minimum speed
-    Serial.println("Setup Initialized");
-    FPRadio.printDetails();
+    pot_input = 0;
+    for (int i=0; i<20; i++){
+      pot_input = pot_input + analogRead(POT_PIN);
+    }
+    pot_input=pot_input/20;
     
+    return true;
   }
   
 void setup() {
@@ -49,9 +43,8 @@ void setup() {
   Serial.begin(115200);
   printf_begin();
   Serial.println();
-  Serial.println(F("RF_NANO v3.0 Test"));
+  Serial.println(F("RF_NANO TRANSMITTER, GLOVER ENGINEERING"));
 
-  //SelfTest;
 
   radioReady=FPRadio.begin();
   if (!radioReady) {
@@ -60,8 +53,8 @@ void setup() {
   FPRadio.setAddressWidth(5);
   FPRadio.openWritingPipe(0xF0F0F0F066LL);
   FPRadio.setChannel(115);           //115 band above WIFI signals
-  FPRadio.setPALevel(RF24_PA_MIN);   //MIN power low rage
-  FPRadio.setDataRate(RF24_2MBPS) ;  //Minimum speed
+  FPRadio.setPALevel(RF24_PA_,MAX);   //MAX power low rage
+  FPRadio.setDataRate(RF24_2MBPS) ;  //Maximum speed
   FPRadio.stopListening(); //Stop Receiving and start transminitng
   Serial.print("Send Setup Initialized");
   FPRadio.printDetails();
@@ -75,13 +68,9 @@ void setup() {
 
 void loop() {
   // put your main code here, to run repeatedly:
-  pot = 0;
-  for (int i=0; i<20; i++){
-    pot = pot + analogRead(POT_PIN);
-  }
-  pot=pot/20;
+  ReadInput();
   
-  WriteData(pot);
+  WriteData(pot_input);
   //delay(5);
   //volts = map(volts,0,1023,0,150);
 }
