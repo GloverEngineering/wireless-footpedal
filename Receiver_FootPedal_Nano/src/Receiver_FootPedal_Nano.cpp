@@ -10,7 +10,9 @@
   #define CHANNEL_READ    123456789
   #define CHANNEL_WRITE   987654321
   #define PIN_SERVO       2
+  #define PIN_INPUT_SELECT  3
   #define PIN_KNOB        A1
+  #define PIN_PEDAL       A2
 
   enum INPUT_MODE{ //declare enumeration type
      WIRELESS,
@@ -20,8 +22,8 @@
   
   INPUT_MODE mode; //declare enum mode of type INPUT_MODE
   int rx_input[32]; //potentiometer raw value receieved from transmitter, 0-1023
-  int knob_input; //potentiometer raw value from knob, 0-1023
-  int setpoint; //setpoint to send to controller via RC servo library
+  uint16_t knob_input; //potentiometer raw value from knob, 0-1023
+  uint16_t setpoint; //setpoint to send to controller via RC servo library
   
   RF24 RXRadio(PIN_RF_CE, PIN_RF_CS);
   Servo MotorController;
@@ -40,7 +42,7 @@
       Serial.print("ReadData: ");
       Serial.println(rx_input[0]);
     }
-    else{
+    else{ //no rx data, use the knob input
       Serial.println("no data");
       rx_connection=false;
       mode=KNOB;
@@ -52,9 +54,17 @@
 
    bool ReadKnob()
   {
-    int data;
-    data=analogRead(PIN_KNOB);
-    knob_input=data;
+    double pot_input=0;
+    //average 20 readings
+   
+    for (int i=0; i<40; i++){
+      pot_input = pot_input + analogRead(PIN_KNOB);
+    }
+    pot_input=round(pot_input/40);
+
+    Serial.print("Raw knob value: ");
+    Serial.println(pot_input);
+    knob_input=pot_input;
     return 1;
   }
   
@@ -88,21 +98,30 @@ void loop() {
   // put your main code here, to run repeatedly:
   int map_max = 180;
   int map_min = 0;
-  if(!ReadRx()){ //wireless is not connected
+  static int last_read = 0; //variable to store the last updated value
+
+  if(!ReadRx()){ //ReadRX and if wireless is not connected set its output to zero as a fail safe
     rx_input[0]=0; //set wireless signal to zero
   }
   ReadKnob();
-
+  //Filter the knob input beyohnd the hardware RC filter. RC filter f_c is set at about 2 hz
+  /*
+  if(abs(knob_input-last_read)>2){ //If the pot has changed by more than 4 counts, write the data. Otherwise keep the previous data
+    last_read = knob_input; //update the last read to the new value
+  }
+  else knob_input=last_read; //knob didn't move enough, set it to the last good value
+*/
   if((mode == WIRELESS)){
    
     if((knob_input>255)){ //if the knob is higher than 25%, use it to set a maximum speed - Set the max speed the foot pedal scale
       map_max = map(knob_input, 0, 1023, 0, 180);
     }
-    else map_max=180;
-    setpoint = map(rx_input[0], 0, 1023, 0, map_max);
+    else map_max=180; //else if the knob is less than 25% let the max value be the max value
+
+    setpoint = map(rx_input[0], 0, 1023, 0, map_max); //set the setpoint based on the scaled wireless input. rx_input is filtered on the footpedal before being sent
   }
 
-  if((mode == KNOB)){
+  if((mode == KNOB)){ //no transmit is detected i.e. no wireless foot pedal and set the setpoint based on the knob input
     map_max=180;
     setpoint = map(knob_input, 0, 1023, 0, map_max);
   }
