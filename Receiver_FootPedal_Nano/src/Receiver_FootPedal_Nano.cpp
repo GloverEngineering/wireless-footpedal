@@ -13,6 +13,7 @@
   #define PIN_INPUT_SELECT  3
   #define PIN_KNOB        A1
   #define PIN_PEDAL       A2
+  #define MAP_MAX_ROBOCLOAW 1910
 
   enum INPUT_MODE{ //declare enumeration type
      WIRELESS,
@@ -96,8 +97,8 @@ void setup() {
 
 void loop() {
   // put your main code here, to run repeatedly:
-  int map_max = 180;
-  int map_min = 0;
+  int map_max = MAP_MAX_ROBOCLOAW;
+  int map_min = 1500;
   static int last_read = 0; //variable to store the last updated value
 
   if(!ReadRx()){ //ReadRX and if wireless is not connected set its output to zero as a fail safe
@@ -114,21 +115,21 @@ void loop() {
   if((mode == WIRELESS)){
    
     if((knob_input>255)){ //if the knob is higher than 25%, use it to set a maximum speed - Set the max speed the foot pedal scale
-      map_max = map(knob_input, 0, 1023, 0, 180);
+      map_max = map(knob_input, 0, 1023, map_min, MAP_MAX_ROBOCLOAW);
     }
-    else map_max=180; //else if the knob is less than 25% let the max value be the max value
+    else map_max=MAP_MAX_ROBOCLOAW; //else if the knob is less than 25% let the max value be the max value
 
-    setpoint = map(rx_input[0], 0, 1023, 0, map_max); //set the setpoint based on the scaled wireless input. rx_input is filtered on the footpedal before being sent
+    setpoint = map(rx_input[0], 0, 1023, map_min, map_max); //set the setpoint based on the scaled wireless input. rx_input is filtered on the footpedal before being sent
   }
 
   if((mode == KNOB)){ //no transmit is detected i.e. no wireless foot pedal and set the setpoint based on the knob input
-    map_max=180;
-    setpoint = map(knob_input, 0, 1023, 0, map_max);
+    map_max=MAP_MAX_ROBOCLOAW;
+    setpoint = map(knob_input, 0, 1023, map_min, map_max);
   }
 
   Serial.print("Setpoint Value: ");
   Serial.println(setpoint);
-  MotorController.write(setpoint);
+  MotorController.writeMicroseconds(setpoint);
   mode=WIRELESS;
   delay(20);
 }
