@@ -12,7 +12,7 @@
   #define PIN_SERVO       2
   #define PIN_INPUT_SELECT  3
   #define PIN_KNOB        A1
-  #define PIN_PEDAL       A2
+  #define PIN_FOOT       A2
 
   enum INPUT_MODE{ //declare enumeration type
      WIRELESS,
@@ -23,6 +23,7 @@
   INPUT_MODE mode; //declare enum mode of type INPUT_MODE
   int rx_input[32]; //potentiometer raw value receieved from transmitter, 0-1023
   uint16_t knob_input; //potentiometer raw value from knob, 0-1023
+  uint16_t foot_input; //potentiometer raw value from foot pedal, 0-1023. note it is oppositely wired from knob
   uint16_t setpoint; //setpoint to send to controller via RC servo library
   
   RF24 RXRadio(PIN_RF_CE, PIN_RF_CS);
@@ -67,11 +68,31 @@
     knob_input=pot_input;
     return 1;
   }
+
+   bool ReadFootpedal()
+  {
+    double pot_input=0;
+    //average 20 readings
+   
+    for (int i=0; i<40; i++){
+      pot_input = pot_input + analogRead(PIN_FOOT);
+    }
+    pot_input=round(pot_input/40);
+
+    Serial.print("Raw foot pedal value: ");
+    Serial.println(pot_input);
+    foot_input=pot_input;
+    return 1;
+  }
+
   
  
   
 void setup() {
 
+  MotorController.write(0); //first thing is ensure motor controller is turned off
+  pinMode(PIN_FOOT, INPUT_PULLUP);
+  
   Serial.begin(115200);
   printf_begin();
   Serial.println();
@@ -104,6 +125,10 @@ void loop() {
     rx_input[0]=0; //set wireless signal to zero
   }
   ReadKnob();
+  ReadFootpedal();
+  foot_input = map(foot_input, 0, 1023, 1023, 0); //foot pedal is wired opposite of knob, and rewiring was not trivial
+  Serial.print("mapped foot pedal value: ");
+  Serial.println(foot_input);
   //Filter the knob input beyohnd the hardware RC filter. RC filter f_c is set at about 2 hz
   /*
   if(abs(knob_input-last_read)>2){ //If the pot has changed by more than 4 counts, write the data. Otherwise keep the previous data
@@ -122,8 +147,16 @@ void loop() {
   }
 
   if((mode == KNOB)){ //no transmit is detected i.e. no wireless foot pedal and set the setpoint based on the knob input
-    map_max=180;
-    setpoint = map(knob_input, 0, 1023, 0, map_max);
+  //now check to see if knob or foot pedal is a higher setpoint and use that as the input
+    if(knob_input>foot_input){
+       map_max=180;
+      setpoint = map(knob_input, 0, 1023, 0, map_max);
+    }
+    else{
+      map_max=180;
+      setpoint = map(foot_input, 0, 1023, 0, map_max);
+    }
+
   }
 
   Serial.print("Setpoint Value: ");
