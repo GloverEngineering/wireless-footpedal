@@ -1,3 +1,4 @@
+  //Receiver v0.1
   #include <Arduino.h>
   #include <Wire.h>
   #include <SPI.h>
@@ -9,8 +10,8 @@
   #define PIN_RF_CS       9  // D10 = Chip Select (CS) for nRF24L01+
   #define CHANNEL_READ    123456789
   #define CHANNEL_WRITE   987654321
-  #define PIN_SERVO       2
-  #define PIN_INPUT_SELECT  3
+  #define PIN_SERVO       3
+  #define PIN_INPUT_SELECT  4
   #define PIN_KNOB        A1
   #define PIN_FOOT       A2
 
@@ -105,9 +106,9 @@ void setup() {
   RXRadio.begin();
   RXRadio.setAddressWidth(5);
   RXRadio.openReadingPipe(1, CHANNEL_READ);
-  RXRadio.setChannel(115);           //115 band above WIFI signals
+  RXRadio.setChannel(120);           //115 band above WIFI signals. up to 125
   RXRadio.setPALevel(RF24_PA_MIN);   //MIN power low rage
-  RXRadio.setDataRate(RF24_2MBPS) ;  //Minimum speed
+  RXRadio.setDataRate(RF24_250KBPS) ;  //Minimum speed RF24_2MBPS
   RXRadio.startListening(); //Stop Receiving and start transminitng
   Serial.print("Receive Setup Initialized");
   RXRadio.printDetails();
@@ -127,8 +128,8 @@ void loop() {
   ReadKnob();
   ReadFootpedal();
   foot_input = map(foot_input, 0, 1023, 1023, 0); //foot pedal is wired opposite of knob, and rewiring was not trivial
-  Serial.print("mapped foot pedal value: ");
-  Serial.println(foot_input);
+  //Serial.print("mapped foot pedal value: ");
+  //Serial.println(foot_input);
   //Filter the knob input beyohnd the hardware RC filter. RC filter f_c is set at about 2 hz
   /*
   if(abs(knob_input-last_read)>2){ //If the pot has changed by more than 4 counts, write the data. Otherwise keep the previous data
@@ -137,7 +138,8 @@ void loop() {
   else knob_input=last_read; //knob didn't move enough, set it to the last good value
 */
   if((mode == WIRELESS)){
-   
+//this section is for using the knob as the max setpoint
+/*
     if((knob_input>255)){ //if the knob is higher than 25%, use it to set a maximum speed - Set the max speed the foot pedal scale
       map_max = map(knob_input, 0, 1023, 0, 180);
     }
@@ -145,7 +147,11 @@ void loop() {
 
     setpoint = map(rx_input[0], 0, 1023, 0, map_max); //set the setpoint based on the scaled wireless input. rx_input is filtered on the footpedal before being sent
   }
-
+*/
+//this section is to NOT use the knob as the max foot pedal setpoint
+   map_max=180;
+   setpoint = map(rx_input[0], 0, 1023, 0, map_max);
+  }
   if((mode == KNOB)){ //no transmit is detected i.e. no wireless foot pedal and set the setpoint based on the knob input
   //now check to see if knob or foot pedal is a higher setpoint and use that as the input
     if(knob_input>foot_input){
@@ -163,5 +169,5 @@ void loop() {
   Serial.println(setpoint);
   MotorController.write(setpoint);
   mode=WIRELESS;
-  delay(20);
+  delay(65);
 }

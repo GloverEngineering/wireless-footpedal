@@ -51,10 +51,10 @@ void setup() {
       Serial.print("Radio Initialisation Failed ");
   }
   FPRadio.setAddressWidth(5);
-  FPRadio.openWritingPipe(0xF0F0F0F066LL);
-  FPRadio.setChannel(115);           //115 band above WIFI signals
+  FPRadio.openWritingPipe(0xF0F0F0F066LL); //address? this is what will pair two items
+  FPRadio.setChannel(120);           //115 band above WIFI signals
   FPRadio.setPALevel(RF24_PA_MAX);   //MAX power low rage
-  FPRadio.setDataRate(RF24_2MBPS) ;  //Maximum speed
+  FPRadio.setDataRate(RF24_250KBPS) ;  //Maximum speed //RF24_2MBPS
   FPRadio.stopListening(); //Stop Receiving and start transminitng
   Serial.print("Send Setup Initialized");
   FPRadio.printDetails();
