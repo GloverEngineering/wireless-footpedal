@@ -14,7 +14,7 @@
 #include <EEPROM.h>
 
 //#define DEBUGSEND
-//#define DEBUG
+#define DEBUG
 //#define DEBUGPOT
 #define DEBUGBATTERY
 #define DEBUGLED
@@ -58,6 +58,14 @@ esp_now_peer_info_t peerInfo;
 uint8_t transmitterAddress[] = {0xF0, 0xF5, 0xBD, 0x31, 0x21, 0x38};
 uint8_t receiverAddress[] = {0x9C, 0x9E, 0x6E, 0x5B, 0x6C, 0xE8};
 
+//Structures
+struct foot_pedal_data{
+  int message_type;
+  uint8_t battery_level;
+  long pot_data;
+  int setpoint_data;
+}
+foot_pedal_data data = {};
 
 //Global Variables
 int led = LED_BUILTIN;
@@ -73,7 +81,15 @@ unsigned long sendFreq = DATA_FREQ;
 bool zeroFlag = false;
 int zeroTime = 0;
 int zeroStart = 0;
+bool pairing = 0;
 
+void pair(void){
+  for(int i=0; i<sizeof(receiverAddress); i++){
+    EEPROM.write(i,receiverAddress[i]);
+    Serial.println(EEPROM.read(i));
+  }
+  delay(2000);
+}
 
 void deletePeer(void) {
   uint8_t delStatus = esp_now_del_peer(transmitterAddress);
@@ -116,21 +132,22 @@ int ReadInput()
 
 // callback when data is sent
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  Serial.print("\r\nLast Packet Send Status:\t");
-  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
-  
-  if(status == !ESP_NOW_SEND_SUCCESS){
-    rx_failure_count++;
-    neopixel.setPixelColor(0, colorFail); //red
-    neopixel.show();
-  }
-  if(status == ESP_NOW_SEND_SUCCESS){
-    neopixel.setPixelColor(0, colorSuccess); //green
-    neopixel.show();
-  }
-  Serial.print("rx_failure_count: ");
-  Serial.println(rx_failure_count);
-
+  #ifdef DEBUGLED
+    Serial.print("\r\nLast Packet Send Status:\t");
+    Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
+    
+    if(status == !ESP_NOW_SEND_SUCCESS){
+      rx_failure_count++;
+      neopixel.setPixelColor(0, colorFail); //red
+      neopixel.show();
+    }
+    if(status == ESP_NOW_SEND_SUCCESS){
+      neopixel.setPixelColor(0, colorSuccess); //green
+      neopixel.show();
+    }
+    Serial.print("rx_failure_count: ");
+    Serial.println(rx_failure_count);
+  #endif
 }
 
 void CheckBattery(){
@@ -174,6 +191,8 @@ void setup() {
   Serial.println("FEATHER C6 TRANSMITTER ESP-NOW, GLOVER ENGINEERING");
   Serial.print("Firmware Version: ");
   Serial.println(FWVERSION);
+  EEPROM.begin(8);
+  pair();
   pinMode(led, OUTPUT);
   pinMode(POT_PIN, INPUT);
 
@@ -254,11 +273,13 @@ void loop() {
       zeroFlag = true; //trigger once, set it to true
     }
     zeroTime = millis() - zeroStart;
-    if (zeroTime >= KEEP_ALIVE_TIME){ //If foot pedal has been at zero for PAUSE_TIME e.g. 5 seconds, stop transmitting at full speed to save battery
+    if (zeroTime >= KEEP_ALIVE_TIME){ //If foot pedal has been at zero for KEEP_ALIVE_TIME e.g. 5 seconds, stop transmitting at full speed to save battery
       sendFreq = KEEP_ALIVE_FREQ;
       colorSuccess = purple;
-      neopixel.setPixelColor(0, purple); //green
-      neopixel.show();
+      #ifdef DEBUGLED
+        neopixel.setPixelColor(0, purple); //green
+        neopixel.show();
+      #endif
     }
     if (zeroTime >= (SLEEP_TIME + KEEP_ALIVE_TIME)){
       Serial.println(zeroTime);
