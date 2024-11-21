@@ -7,23 +7,32 @@
 #include "Adafruit_MAX1704X.h" //power monitoring
 #include <Adafruit_NeoPixel.h> //neopixel control
 #include "driver/rtc_io.h"
+//#include "driver/adc.h"
+#include "esp_adc/adc_continuous.h"
+//#include "esp_adc/adc_oneshot.h"
+#include <esp_wifi.h>
+#include <EEPROM.h>
 
 //#define DEBUGSEND
 //#define DEBUG
 //#define DEBUGPOT
 #define DEBUGBATTERY
+#define DEBUGLED
+#define FWVERSION 0.1
 #define POT_PIN A0
-#define CHANNEL 1                 //1-14
-#define UPDATE_BATT_DELAY 60000   //1 minute
-#define POT_FREQ 64               //5hz
+#define CHANNEL 11                 //1-14
+#define UPDATE_BATT_DELAY 10000   //1 minute
+#define POT_SAMPLES 64               //5hz
 #define DATA_FREQ 10                //5hz
 #define KEEP_ALIVE_FREQ 1         //1 hz
-#define KEEP_ALIVE_TIME 5000      //5000 ms
-#define SLEEP_TIME 10000          // seconds. Change to 60 seconds or longer in the future
+#define KEEP_ALIVE_TIME 5000      //5000 ms amount of time to switch from full speed transmit to keep_alive_time transmit 
+#define SLEEP_TIME 10000          // milliseconds. Change to 60 seconds or longer in the future
 #define BLUE (0,255,255) 
+#define LED_PWR_PIN 4
 //NEOPIXEL_I2C_POWER IO20
 //PIN_NEOPIXEL IO9
 //LED_BULTIN 15
+
 //sleep stuff
 #define BUTTON_PIN_BITMASK(GPIO) (1ULL << GPIO)  // 2 ^ GPIO_NUMBER in hex
 #define WAKEUP_GPIO              GPIO_NUM_1     // Only RTC IO are allowed - ESP32 Pin example
@@ -47,7 +56,7 @@ uint32_t colorSuccess = green; //innitialize a blank color variable
 // ESP32
 esp_now_peer_info_t peerInfo;
 uint8_t transmitterAddress[] = {0xF0, 0xF5, 0xBD, 0x31, 0x21, 0x38};
-uint8_t receiverAddress[] = {0xF0, 0xF5, 0xBD, 0x31, 0x22, 0x50};
+uint8_t receiverAddress[] = {0x9C, 0x9E, 0x6E, 0x5B, 0x6C, 0xE8};
 
 
 //Global Variables
@@ -65,57 +74,6 @@ bool zeroFlag = false;
 int zeroTime = 0;
 int zeroStart = 0;
 
-void setup() {
-  
-//serial and pinmodes
-  Serial.begin(115200);
-  Serial.println("FEATHER C6 TRANSMITTER ESP-NOW, GLOVER ENGINEERING");
-  pinMode(led, OUTPUT);
-  pinMode(POT_PIN, INPUT);
-
-//LED
-  neopixel.begin();
-  neopixel.clear();
-  neopixel.setBrightness(15);
-  //neopixel.setPixelColor(0, green));
-  //neopixel.show();
-  
-//wifi
-  WiFi.mode(WIFI_STA);
-  if (esp_now_init() == ESP_OK) {
-    Serial.println("ESP-NOW Initialized");
-  }
-  else{
-    Serial.println("ESP-Now Initialization Error");
-    return;
-  }
-
-  //Serial.println(esp_wifi_set_max_tx_power(8));
-  WiFi.setTxPower(WIFI_POWER_15dBm); //WIFI_POWER_2dBm 
-  Serial.println(WiFi.getTxPower());
-  
-  //Register peer
-  esp_now_register_send_cb(OnDataSent); //call back function
-  peerInfo.channel = CHANNEL;  
-  peerInfo.encrypt = false;
-  memcpy(peerInfo.peer_addr, receiverAddress, 6); //arrays can't be set with =, so using memcpy to set peer_addr to receiverAddress
-  
-  //Add peer
-  if (esp_now_add_peer(&peerInfo) != ESP_OK){
-    Serial.println("Failed to add peer");
-    return;
-  }
-
-  
-
-  while (!maxlipo.begin()) {
-    Serial.println(F("Couldnt find Adafruit MAX17048?\nMake sure a battery is plugged in!"));
-    delay(2000);
-  }
-  Serial.print(F("Found MAX17048"));
-  Serial.print(F(" with Chip ID: 0x")); 
-  Serial.println(maxlipo.getChipID(), HEX);
-}
 
 void deletePeer(void) {
   uint8_t delStatus = esp_now_del_peer(transmitterAddress);
@@ -148,10 +106,10 @@ void sendData(void) {
 int ReadInput()
   {
     pot_input = 0;
-    for (int i=0; i<POT_FREQ; i++){
+    for (int i=0; i<POT_SAMPLES; i++){
       pot_input = pot_input + analogRead(POT_PIN);
     }
-    pot_input=pot_input/POT_FREQ;
+    pot_input=pot_input/POT_SAMPLES;
     
     return true;
   }
@@ -176,6 +134,7 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 }
 
 void CheckBattery(){
+  //WiFi.mode(WIFI_OFF);
   float cellVoltage = maxlipo.cellVoltage();
   if (isnan(cellVoltage)) {
     Serial.println("Failed to read cell voltage, check battery is connected!");
@@ -185,16 +144,98 @@ void CheckBattery(){
   Serial.print(F("Batt Voltage: ")); Serial.print(cellVoltage, 3); Serial.println(" V");
   Serial.print(F("Batt Percent: ")); Serial.print(maxlipo.cellPercent(), 1); Serial.println(" %");
   #endif
+  /*
+  WiFi.mode(WIFI_STA);
+  esp_now_init();
+
+  //now check with wifi on
+  cellVoltage = maxlipo.cellVoltage();
+  #ifdef DEBUGBATTERY
+  Serial.print(F("WiFi ON Batt Percent: ")); Serial.print(maxlipo.cellPercent(), 1); Serial.println(" %");
+  #endif
+  */
 }
 
 void disableInternalPower() {
   pinMode(NEOPIXEL_I2C_POWER, OUTPUT);
   digitalWrite(NEOPIXEL_I2C_POWER, LOW);
+  //adc_power_off();
+  //adc_power_release()
 }
 void enableInternalPower() {
   pinMode(NEOPIXEL_I2C_POWER, OUTPUT);
   digitalWrite(NEOPIXEL_I2C_POWER, HIGH);
 }
+
+void setup() {
+  
+  //serial and pinmodes
+  Serial.begin(115200);
+  Serial.println("FEATHER C6 TRANSMITTER ESP-NOW, GLOVER ENGINEERING");
+  Serial.print("Firmware Version: ");
+  Serial.println(FWVERSION);
+  pinMode(led, OUTPUT);
+  pinMode(POT_PIN, INPUT);
+
+  //LED
+  pinMode(LED_PWR_PIN, OUTPUT);
+  digitalWrite(LED_PWR_PIN, HIGH);
+
+  neopixel.begin();
+  neopixel.clear();
+  neopixel.setBrightness(15);
+  //neopixel.setPixelColor(0, green));
+  //neopixel.show();
+  
+  //wifi
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  //set channel
+  esp_err_t result = esp_wifi_set_channel(11, WIFI_SECOND_CHAN_NONE);
+  if (result == ESP_OK) {
+    Serial.println("Channel Set Successfully");
+  }
+  else{
+    Serial.println("Failed to set channel");
+    return;
+  }
+  
+  if (esp_now_init() == ESP_OK) {
+    Serial.println("ESP-NOW Initialized");
+  }
+  else{
+    Serial.println("ESP-Now Initialization Error");
+    return;
+  }
+ 
+
+  //Serial.println(esp_wifi_set_max_tx_power(8));
+  WiFi.setTxPower(WIFI_POWER_19dBm); //WIFI_POWER_2dBm WIFI_POWER_19dBm
+  Serial.println(WiFi.getTxPower());
+  
+  //Register peer
+  esp_now_register_send_cb(OnDataSent); //call back function
+  peerInfo.channel = CHANNEL;  
+  peerInfo.encrypt = false;
+  memcpy(peerInfo.peer_addr, receiverAddress, 6); //arrays can't be set with =, so using memcpy to set peer_addr to receiverAddress
+  
+  //Add peer
+  if (esp_now_add_peer(&peerInfo) != ESP_OK){
+    Serial.println("Failed to add peer");
+    return;
+  }
+
+  
+
+  while (!maxlipo.begin()) {
+    Serial.println(F("Couldnt find Adafruit MAX17048?\nMake sure a battery is plugged in!"));
+    delay(500);
+  }
+  Serial.print(F("Found MAX17048"));
+  Serial.print(F(" with Chip ID: 0x")); 
+  Serial.println(maxlipo.getChipID(), HEX);
+}
+
 void loop() {
   
   ReadInput();
@@ -222,7 +263,12 @@ void loop() {
     if (zeroTime >= (SLEEP_TIME + KEEP_ALIVE_TIME)){
       Serial.println(zeroTime);
       Serial.println("going to deep sleep now...");
+      WiFi.mode(WIFI_OFF);
+      esp_wifi_stop();
       disableInternalPower();
+      //adc_power_release();
+      //adc_power_off();
+      delay(10);
       esp_sleep_enable_ext1_wakeup_io(BUTTON_PIN_BITMASK(WAKEUP_GPIO), ESP_EXT1_WAKEUP_ANY_HIGH);
       esp_deep_sleep_start();
     } 
@@ -237,18 +283,18 @@ void loop() {
     lastUpdateBattMillis = currentMillis;
     CheckBattery();
     #ifdef DEBUGBATTERY
-    neopixel.setPixelColor(0, yellow); //yellow
+    neopixel.setPixelColor(0, coral); //yellow
     neopixel.show();
-    delay(250);
+    delay(100);
     neopixel.clear();
     neopixel.show();
-    delay(250);
-    neopixel.setPixelColor(0, yellow); //yellow
+    delay(100);
+    neopixel.setPixelColor(0, coral); //yellow
     neopixel.show();
-    delay(250);
+    delay(100);
     neopixel.clear();
     neopixel.show();
-    delay(250);
+    delay(100);
     #endif
   }
 
