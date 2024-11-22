@@ -1,4 +1,3 @@
-test
 // ESP32 Imports
 #include <esp_now.h>
 #include <WiFi.h>
@@ -15,8 +14,8 @@ test
 #define DEBUGWIRELESS
 //#define DEBUGPOT
 //#define DEBUGPRINT
-#define DEBUGBATTERY
-#define FWVERSION 0.1
+//#define DEBUGBATTERY
+#define FWVERSION 0.2
 #define CHANNEL 11
 #define LED_PIN LED_BUILTIN
 #define UPDATE_BATT_DELAY 60000   //once per minute: time in milliseconds
@@ -24,11 +23,11 @@ test
 #define DATA_FREQ 10              //hz
 #define KEEP_ALIVE_FREQ 1         //1 hz
 #define PIN_SERVO 4 //6
-//#define PIN_INPUT_SELECT  4
 #define PIN_KNOB  A0
 #define PIN_FOOT  A2
 #define KNOB_MAX 3220
 #define FOOT_MAX 3311
+#define WIRELESS_MAX 3350
 //NEOPIXEL_I2C_POWER IO20
 //PIN_NEOPIXEL IO9
 //LED_BULTIN 15
@@ -51,15 +50,26 @@ uint32_t colorSuccess = green; //innitialize a blank color variable
 // ESP32
 esp_now_peer_info_t peerInfo;
 uint8_t BroadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-uint8_t transmitterAddress[] = {0xF0, 0xF5, 0xBD, 0x31, 0x21, 0x38};
-uint8_t receiverAddress[] = {0x9C, 0x9E, 0x6E, 0x5B, 0x6C, 0xE8};
+uint8_t transmitterAddress[6]; // = {0xF0, 0xF5, 0xBD, 0x31, 0x21, 0x38};
+uint8_t receiverAddress[6]; // = {0x9C, 0x9E, 0x6E, 0x5B, 0x6C, 0xE8};
+
+//Structures
+struct foot_pedal_struct{
+  int message_type; //0 data, 1 is pairing
+  uint8_t battery_level; // battery level in percentage from 0-100%
+  uint32_t pot_data; // only needs to be 32 bit because to average you add up 64 samples
+  int setpoint_data; // if sending a mapped value from 0-180
+  uint8_t MacAddress[6]; //mac address array
+};
 
 //Global Variables
+foot_pedal_struct foot_pedal_data;
+foot_pedal_struct outgoing_data;
 int led = LED_BUILTIN;
 bool receivedFlag = false;
 unsigned long lastUpdateMillis = 0;
 unsigned long lastReceived = 0;
-uint16_t rx_input; //potentiometer raw value receieved from transmitter, 0-1023
+uint32_t rx_input; //potentiometer raw value receieved from transmitter, 0-1023
 uint16_t knob_input; //potentiometer raw value from knob, 0-1023
 uint16_t foot_input; //potentiometer raw value from foot pedal, 0-1023. note it is oppositely wired from knob
 uint16_t setpoint; //setpoint to send to controller via RC servo library
@@ -76,17 +86,20 @@ INPUT_MODE mode; //declare enum mode of type INPUT_MODE
 void onDataReceived(const uint8_t *mac_addr, const uint8_t *incomingData, int data_len) {
   lastReceived = millis();
 
-  memcpy(&rx_input, incomingData, sizeof(rx_input));
+  memcpy(&foot_pedal_data, incomingData, sizeof(foot_pedal_data));
+  rx_input = foot_pedal_data.pot_data;
   receivedFlag = *incomingData;
   #ifdef DEBUGWIRELESS
     Serial.print("Bytes received: ");
     Serial.println(data_len);
+    Serial.print("Averaged wireless foot pedal value: ");
+    Serial.println(rx_input);
   #endif
-  Serial.print("Averaged wireless foot pedal value: ");
-  Serial.println(rx_input);
+
   neopixel.setPixelColor(0, green); //green
   neopixel.show();
   mode = WIRELESS;
+
 }
 
 bool ReadFootpedal()
@@ -136,14 +149,15 @@ void setup() {
   Serial.println("FEATHER C6 TRANSMITTER ESP-NOW, GLOVER ENGINEERING");
   Serial.print("Firmware Version: ");
   Serial.println(FWVERSION);
+//pins
   pinMode(PIN_FOOT, INPUT);
   pinMode(PIN_KNOB, INPUT);
   pinMode(led, OUTPUT);
 //Motor Controller
   ESP32PWM::allocateTimer(0);
-	ESP32PWM::allocateTimer(1);
-	ESP32PWM::allocateTimer(2);
-	ESP32PWM::allocateTimer(3);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
   MotorController.setPeriodHertz(50);
   MotorController.attach(PIN_SERVO, 1000, 2000);
   
@@ -171,37 +185,35 @@ void setup() {
     return;
   }
 
-    //set channel
-  /*
-  esp_err_t result = esp_wifi_set_channel(11, WIFI_SECOND_CHAN_NONE);
-  if (result == ESP_OK) {
-    Serial.println("Channel Set Successfully");
-  }
-  else{
-    Serial.println("Failed to set channel");
-    return;
-  }
-*/
-  //Register peer
+  //Register call back function for receiving data
   esp_now_register_recv_cb(esp_now_recv_cb_t(onDataReceived));
+
+  //Send mac address once every power up to pair with a foot pedal that is in pairing mode
   peerInfo.channel = CHANNEL;
   peerInfo.encrypt = false;
-  /*memcpy(peerInfo.peer_addr, transmitterAddress, 6); //arrays can't be set with =, so using memcpy to set peer_addr to receiverAddress
+  WiFi.setTxPower(WIFI_POWER_19dBm);
+  memcpy(peerInfo.peer_addr, BroadcastAddress, 6); //arrays can't be set with =, so using memcpy to set peer_addr to receiverAddress
   //Add peer
   if (esp_now_add_peer(&peerInfo) != ESP_OK){
     Serial.println("Failed to add peer");
     return;
   }
-*/
 
-  while (!maxlipo.begin()) {
-    Serial.println(F("Couldnt find Adafruit MAX17048?\nMake sure a battery is plugged in!"));
-    delay(500);
+  //get board mac address and convert to byte array. Thanks chatgpt
+  String macStr = WiFi.macAddress();
+  for (int i = 0; i < 6; i++) {
+    outgoing_data.MacAddress[i] = (uint8_t)strtol(macStr.substring(i * 3, i * 3 + 2).c_str(), NULL, 16);
+    Serial.print(outgoing_data.MacAddress[i]);
   }
+  outgoing_data.message_type = 1;
+  esp_err_t result2 = esp_now_send(BroadcastAddress, (uint8_t *) &outgoing_data, sizeof(outgoing_data));
+  if (result2 == ESP_OK) { Serial.println("Send Success");
+    } else{Serial.print("Send Error");}
 
-  Serial.print(F("Found MAX17048"));
-  Serial.print(F(" with Chip ID: 0x")); 
-  Serial.println(maxlipo.getChipID(), HEX);
+  //now delete the broadcast peer
+  esp_now_del_peer(BroadcastAddress);
+  
+
 }
 
 void loop() {
@@ -239,13 +251,6 @@ void loop() {
     setpoint = map(rx_input, 0, FOOT_MAX, 0, map_max);
   }
 
-/* only used for development
-  currentMillis = millis();
-  if (currentMillis - lastUpdateMillis >= UPDATE_BATT_DELAY) { //every UPDATE_BATT_DELAY seconds, check the battery
-    lastUpdateMillis = currentMillis;
-    CheckBattery();
-  }
-*/
   Serial.print("Mode: ");
   Serial.println(mode);
   Serial.print("Setpoint Value: ");
