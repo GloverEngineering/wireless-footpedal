@@ -15,7 +15,7 @@
 //#define DEBUGPOT
 //#define DEBUGPRINT
 //#define DEBUGBATTERY
-#define FWVERSION 0.2
+#define FWVERSION 0.5
 #define CHANNEL 11
 #define LED_PIN LED_BUILTIN
 #define UPDATE_BATT_DELAY 60000   //once per minute: time in milliseconds
@@ -25,9 +25,12 @@
 #define PIN_SERVO 4 //6
 #define PIN_KNOB  A0
 #define PIN_FOOT  A2
-#define KNOB_MAX 3220
-#define FOOT_MAX 3311
-#define WIRELESS_MAX 3350
+#define KNOB_MAX 3200
+#define FOOT_MAX 3300
+#define WIRELESS_MAX 3200
+#define DATA_MESSAGE 0    //message_type 0 is data
+#define PAIRING_MESSAGE 1 //message_type 1 is pairing
+
 //NEOPIXEL_I2C_POWER IO20
 //PIN_NEOPIXEL IO9
 //LED_BULTIN 15
@@ -56,7 +59,7 @@ uint8_t receiverAddress[6]; // = {0x9C, 0x9E, 0x6E, 0x5B, 0x6C, 0xE8};
 //Structures
 struct foot_pedal_struct{
   int message_type; //0 data, 1 is pairing
-  uint8_t battery_level; // battery level in percentage from 0-100%
+  float battery_level; // battery level in percentage from 0-100%
   uint32_t pot_data; // only needs to be 32 bit because to average you add up 64 samples
   int setpoint_data; // if sending a mapped value from 0-180
   uint8_t MacAddress[6]; //mac address array
@@ -87,18 +90,22 @@ void onDataReceived(const uint8_t *mac_addr, const uint8_t *incomingData, int da
   lastReceived = millis();
 
   memcpy(&foot_pedal_data, incomingData, sizeof(foot_pedal_data));
-  rx_input = foot_pedal_data.pot_data;
-  receivedFlag = *incomingData;
-  #ifdef DEBUGWIRELESS
-    Serial.print("Bytes received: ");
-    Serial.println(data_len);
-    Serial.print("Averaged wireless foot pedal value: ");
-    Serial.println(rx_input);
-  #endif
+  if (foot_pedal_data.message_type==DATA_MESSAGE) //basically, ignore pairing requests from other boxes
+  {
+    rx_input = foot_pedal_data.pot_data;
+    receivedFlag = *incomingData;
+    #ifdef DEBUGWIRELESS
+      Serial.print("Bytes received: ");
+      Serial.println(data_len);
+      Serial.print("Averaged wireless foot pedal value: ");
+      Serial.println(rx_input);
+    #endif
 
-  neopixel.setPixelColor(0, green); //green
-  neopixel.show();
-  mode = WIRELESS;
+    neopixel.setPixelColor(0, green); //green
+    neopixel.show();
+    mode = WIRELESS;
+  }
+  
 
 }
 
@@ -187,7 +194,7 @@ void setup() {
 
   //Register call back function for receiving data
   esp_now_register_recv_cb(esp_now_recv_cb_t(onDataReceived));
-
+//this section is sending a pairing mac address message every startup
   //Send mac address once every power up to pair with a foot pedal that is in pairing mode
   peerInfo.channel = CHANNEL;
   peerInfo.encrypt = false;
@@ -205,7 +212,7 @@ void setup() {
     outgoing_data.MacAddress[i] = (uint8_t)strtol(macStr.substring(i * 3, i * 3 + 2).c_str(), NULL, 16);
     Serial.print(outgoing_data.MacAddress[i]);
   }
-  outgoing_data.message_type = 1;
+  outgoing_data.message_type = PAIRING_MESSAGE; //DATA is message_type 0, PAIRING is message type 0
   esp_err_t result2 = esp_now_send(BroadcastAddress, (uint8_t *) &outgoing_data, sizeof(outgoing_data));
   if (result2 == ESP_OK) { Serial.println("Send Success");
     } else{Serial.print("Send Error");}
@@ -248,7 +255,7 @@ void loop() {
   else{ //wireless mode
     //Moved the map function to the foot pedal. So the foot pedal transmits the 0-180 value
     map_max=180;
-    setpoint = map(rx_input, 0, FOOT_MAX, 0, map_max);
+    setpoint = map(rx_input, 0, WIRELESS_MAX, 0, map_max);
   }
 
   Serial.print("Mode: ");
@@ -260,3 +267,4 @@ void loop() {
 
 
 }
+ 
