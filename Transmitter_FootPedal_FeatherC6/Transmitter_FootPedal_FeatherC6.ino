@@ -14,26 +14,29 @@
 #include <EEPROM.h>
 
 //#define DEBUGSEND
-#define DEBUG
+//#define DEBUG
 //#define DEBUGPOT
-#define DEBUGPAIRING
-//#define DEBUGBATTERY
-#define DEBUGLED
-#define FWVERSION 0.2
+//#define DEBUGPAIRING
+#define DEBUGBATTERY
+//#define DEBUGLED
+#define FWVERSION 0.5
 #define POT_PIN A0
 #define CHANNEL 11                 //1-14
-#define UPDATE_BATT_DELAY 60000   //1 minute
+#define UPDATE_BATT_DELAY 10000   //1 minute
 #define POT_SAMPLES 64               //5hz
 #define DATA_FREQ 10                //5hz
 #define KEEP_ALIVE_FREQ 1         //1 hz
 #define KEEP_ALIVE_TIME 5000      //5000 ms amount of time to switch from full speed transmit to keep_alive_time transmit 
 #define SLEEP_TIME 60000          // milliseconds. Change to 60 seconds or longer in the future
 #define PAIRING_BLINK_TIME 500    // blink fast when pairing
+#define CHARGE_BLINK_TIME 150     //blink real fast
 #define BLUE (0,255,255) 
 #define LED_PWR_PIN 4
-#define WIRELESS_MAX 3300
-#define PAIRING_MAX 3200
-#define SLEEP_ADDRESS 8 //EEPROM address to store sleep flag bit
+#define WIRELESS_MAX 3200
+#define PAIRING_MAX 3100
+#define SLEEP_ADDRESS 8 //EEPROM address to store sleep flag bit. 0 if powe rup. 1 if sleeping
+#define DATA_MESSAGE 0    //message_type 0 is data
+#define PAIRING_MESSAGE 1 //message_type 1 is pairing
 
 //NEOPIXEL_I2C_POWER IO20
 //PIN_NEOPIXEL IO9
@@ -67,7 +70,7 @@ uint8_t receiverAddress[] = {0x10, 0x11, 0x12, 0x13, 0x14, 0x15};
 //Structures
 struct foot_pedal_struct{
   int message_type; //0 data, 1 is pairing
-  uint8_t battery_level; // battery level in percentage from 0-100%
+  float battery_level; // battery level in percentage from 0-100%
   uint32_t pot_data; // only needs to be 32 bit because to average you add up 64 samples
   int setpoint_data; // if sending a mapped value from 0-180
   uint8_t MacAddress[6]; //mac address array
@@ -78,7 +81,7 @@ enum STATES{ //declare enumeration type
   DATA,
 };
 
-STATES mode; //variable mode of type STATES
+STATES mode; //variable mode of enum type STATES
 
 //Global Variables
 foot_pedal_struct foot_pedal_data;
@@ -96,9 +99,13 @@ unsigned long sendFreq = DATA_FREQ;
 bool zeroFlag = false;
 int zeroTime = 0;
 int zeroStart = 0;
-int blinkTime = 0;
-bool pairing = false;
-bool led_state = false;
+uint16_t blinkTime = 0; //timer for last blink
+bool pairing = false; //flag to indicate if we are in pairing mode
+bool led_state = false; //flag for teh state of the power led
+bool charging = false; //flag to indicate if we are charging
+float cell_voltage; //global variable to store cell voltage
+float startup_cell_voltage;
+float charge_rate; //max17048 charge rate
 
 void pair(void){
   for(int i=0; i<sizeof(receiverAddress); i++){
@@ -127,9 +134,12 @@ void deletePeer(void) {
 void sendData(void) {
   Serial.print("POT value: ");
   Serial.println(foot_pedal_data.pot_data);
-  for (int i = 0; i < 6; i++) {
-    Serial.print(receiverAddress[i]);
-  }
+  #ifdef DEBUGPAIRING
+    for (int i = 0; i < 6; i++) {
+      Serial.print(receiverAddress[i]);
+    }
+  #endif
+
   esp_err_t result = esp_now_send(receiverAddress, (uint8_t *) &foot_pedal_data, sizeof(foot_pedal_data));
   //the error codes are mostly for issues with peers and stuff
   #ifdef DEBUGSEND
@@ -182,7 +192,7 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 void onDataReceived(const uint8_t *mac_addr, const uint8_t *incomingData, int data_len) {
   memcpy(&receiver_data, incomingData, sizeof(receiver_data));
 
-  if (receiver_data.message_type == 1 ){ //message_type 0 is data, 1 is pairing request
+  if (receiver_data.message_type == PAIRING_MESSAGE ){ //message_type 0 is data, 1 is pairing request
     memcpy(receiverAddress, receiver_data.MacAddress, 6); //copy received mac address to global variable - now anything sent will wend correct
     for(int i=0; i<sizeof(receiverAddress); i++){
       Serial.println(receiverAddress[i]);
@@ -196,6 +206,8 @@ void onDataReceived(const uint8_t *mac_addr, const uint8_t *incomingData, int da
 void CheckBattery(){
   //WiFi.mode(WIFI_OFF);
   float cellVoltage = maxlipo.cellVoltage();
+  charge_rate = maxlipo.chargeRate();
+
   if (isnan(cellVoltage)) {
     Serial.println("Failed to read cell voltage, check battery is connected!");
     return;
@@ -203,19 +215,11 @@ void CheckBattery(){
   #ifdef DEBUGBATTERY
     Serial.print(F("Batt Voltage: ")); Serial.print(cellVoltage, 3); Serial.println(" V");
     Serial.print(F("Batt Percent: ")); Serial.print(maxlipo.cellPercent(), 1); Serial.println(" %");
+    Serial.print(F("Charge Rate: ")); Serial.print(charge_rate, 1); Serial.println(" %/hr");
   #endif
-
+  cell_voltage = cellVoltage; //assign to global variable
   foot_pedal_data.battery_level = maxlipo.cellPercent();
-  /*
-  WiFi.mode(WIFI_STA);
-  esp_now_init();
-
-  //now check with wifi on
-  cellVoltage = maxlipo.cellVoltage();
-  #ifdef DEBUGBATTERY
-  Serial.print(F("WiFi ON Batt Percent: ")); Serial.print(maxlipo.cellPercent(), 1); Serial.println(" %");
-  #endif
-  */
+  
 }
 
 void disableInternalPower() {
@@ -232,6 +236,7 @@ void enableInternalPower() {
 
 
 void setup() {
+  analogReadResolution(12);
   mode = DATA;
   //serial
   Serial.begin(115200);
@@ -240,14 +245,14 @@ void setup() {
   Serial.println(FWVERSION);
 
   //EEPROM definition
-  EEPROM.begin(9);
+  EEPROM.begin(9); //actually only needed 7 bytes because mac address is 6. I was thinking it was 8. Need 1 extra byte to store the flag indicating if we are coming out of sleep or not
 
   //pinmodes
   pinMode(led, OUTPUT);
   pinMode(POT_PIN, INPUT);
   
   // Pairing
-  //read from EEPROM unless it is 0xFF (255) regardless of what is there
+  //read mac address from EEPROM unless it is 0xFF (255)
   if(EEPROM.read(0)!=0xFF){
     for(int i=0; i<sizeof(receiverAddress); i++){
     receiverAddress[i] = EEPROM.read(i);
@@ -266,8 +271,6 @@ void setup() {
       mode = DATA;
     }
   }
-  EEPROM.write(SLEEP_ADDRESS, 0); //reset it back to zero
-  EEPROM.commit();
 
   //LED
   pinMode(LED_PWR_PIN, OUTPUT);
@@ -323,6 +326,27 @@ void setup() {
   Serial.print(F("Found MAX17048"));
   Serial.print(F(" with Chip ID: 0x")); 
   Serial.println(maxlipo.getChipID(), HEX);
+
+//Read battery capacity and output that to the user via blinking the LEDs
+  if((EEPROM.read(SLEEP_ADDRESS)==0)&&(mode==DATA)){ //only do this if we are powering up (not sleep) and not in pairing mode
+    delay(500);
+    CheckBattery(); //get the current cell voltage and battery capacity upon startup
+    startup_cell_voltage = cell_voltage; //store the value
+    int blink_times = foot_pedal_data.battery_level/10;
+    //Serial.println(foot_pedal_data.battery_level);
+    //Serial.print("Number of blinks: ");
+    //Serial.println(blink_times);
+    for(int i = 0; i<blink_times; i++){
+      digitalWrite(LED_PWR_PIN, !digitalRead(LED_PWR_PIN));
+      delay(CHARGE_BLINK_TIME);
+      digitalWrite(LED_PWR_PIN, !digitalRead(LED_PWR_PIN));
+      delay(CHARGE_BLINK_TIME);
+    }
+  }
+  
+  EEPROM.write(SLEEP_ADDRESS, 0); //reset it back to zero
+  EEPROM.commit();
+
 }
 
 void loop() {
@@ -348,7 +372,7 @@ void loop() {
       
     case DATA:
       ReadInput();
-      foot_pedal_data.message_type = 0;
+      foot_pedal_data.message_type = DATA_MESSAGE;
       //pot_input >> 4;
       currentMillis = millis();
       #ifdef DEBUGPOT
@@ -365,14 +389,14 @@ void loop() {
         }
         zeroTime = millis() - zeroStart;
         if (zeroTime >= KEEP_ALIVE_TIME){ //If foot pedal has been at zero for KEEP_ALIVE_TIME e.g. 5 seconds, stop transmitting at full speed to save battery
-          sendFreq = KEEP_ALIVE_FREQ;
+          sendFreq = KEEP_ALIVE_FREQ; //start transmitting at the keep_alive_freq
           colorSuccess = purple;
           #ifdef DEBUGLED
             neopixel.setPixelColor(0, purple); //green
             neopixel.show();
           #endif
         }
-        if (zeroTime >= (SLEEP_TIME + KEEP_ALIVE_TIME)){
+        if (zeroTime >= (SLEEP_TIME + KEEP_ALIVE_TIME)){ //we have been at zero input for sleeptime plus the time before goign into keep alive. go to deep sleep if not charging
           Serial.println(zeroTime);
           Serial.println("going to deep sleep now...");
           EEPROM.write(SLEEP_ADDRESS, 1); //write the sleep flag 1 immedietly when going to sleep. When waking up, set it to zero.
