@@ -20,7 +20,7 @@
 #define DEBUGBATTERY
 //#define DEBUGLED
 #define FIRST_RUN 1               //Flag to run some code to set EEPROM values store the very first time it is run
-#define FWVERSION 0.6
+#define FWVERSION 0.7
 #define POT_PIN A0
 #define CHANNEL 11                //1-14
 #define UPDATE_BATT_DELAY 60000  //Update battery values every 1 minute
@@ -82,11 +82,14 @@ struct foot_pedal_struct{
 enum STATES{ //declare enumeration type
   PAIRING,
   DATA,
+  CHARGE,
 };
 
 STATES mode; //variable mode of enum type STATES
 
 //Global Variables
+int brightness = 0;
+int fadeAmount = 5;
 foot_pedal_struct foot_pedal_data;
 foot_pedal_struct receiver_data;
 int led = LED_BUILTIN;
@@ -109,6 +112,9 @@ bool charging = false; //flag to indicate if we are charging
 float cell_voltage; //global variable to store cell voltage
 float startup_cell_voltage;
 float charge_rate; //max17048 charge rate
+int chargeStart = 0;
+int chargeTime = 0;
+bool chargeFlag = false;
 float last_cell_voltage;
 float new_cell_voltage;
 
@@ -346,21 +352,10 @@ void setup() {
   //maxlipo.quickStart();//auot-calibration. Not sure how bad this is
 
 //Read battery capacity and output that to the user via blinking the LEDs
-  Serial.print("eeprom in setup is:");
-  Serial.println(EEPROM.read(FLOAT_ADDRESS));
-  readFloatFromEEPROM(FLOAT_ADDRESS, cell_voltage);
-  //check if eeprom is initialized. Not sure if we need this. I think the NAN issue was old code from chatgpt
-  if(EEPROM.read(FLOAT_ADDRESS)==0xFF){ //eeprom hasn't been initialized IF =255. Set it to 5v
-    float temp = 5.0000;
-    storeFloatInEEPROM(FLOAT_ADDRESS,temp);
-    Serial.print("eeprom is was 0xFF. Here is the new value in Setup(), should be 5 ");
-    Serial.println(EEPROM.read(FLOAT_ADDRESS));
-  }
   //only check battery capacity when in data mode, and not powering up from sleep
   if((EEPROM.read(SLEEP_ADDRESS)==0)&&(mode==DATA)){ //only do this if we are powering up (not sleep) and not in pairing mode
-    delay(800); //can't figure out why readings are bad. Maybe a startup delay will help
+    delay(1000); //can't figure out why readings are bad. Maybe a startup delay will help
     CheckBattery(); //get the current cell voltage and battery capacity upon startup
-    startup_cell_voltage = cell_voltage; //store the value
     int blink_times = foot_pedal_data.battery_level/10;
     //Serial.println(foot_pedal_data.battery_level);
     //Serial.print("Number of blinks: ");
@@ -399,6 +394,24 @@ void loop() {
         Serial.print(pairing);
       #endif
 
+
+      //we are in pairing mode but lets check if we should move to charging mode
+      ReadInput();
+      if(pot_input >= PAIRING_MAX){
+        if(chargeFlag==false){//first time pot_input is max so grab the time but don't do it again unless it goes to zero
+          chargeStart = millis();
+          chargeFlag = true;
+        }
+        chargeTime = millis() - chargeStart;
+        if(chargeTime >= 2000){ //if foot pedal is held all the way for 2 seconds in pairng mode
+          mode = CHARGE;
+          break;
+        }
+      }
+      else{
+        chargeFlag = false;
+      }
+
       break;
       // delete Serial.println(EEPROM.read(SLEEP_ADDRESS));
       
@@ -429,27 +442,21 @@ void loop() {
           #endif
         }
         if (zeroTime >= (SLEEP_TIME + KEEP_ALIVE_TIME)){ //time to sleep: we have been at zero input for sleeptime plus the time before goign into keep alive. go to deep sleep if not charging
+          Serial.println("going to deep sleep now...");
           CheckBattery(); //get current battery values
           Serial.print("Check to sleep. Cell voltage: ");
           Serial.println(cell_voltage,3);
-          if(cell_voltage<CHARGE_VOLTAGE){//not charging: assume a very low %/hr charge rate just in case it goes positive. Seems to be bugs when connected to computer
-            Serial.println(zeroTime);
-            Serial.println("going to deep sleep now...");
-            storeFloatInEEPROM(FLOAT_ADDRESS,cell_voltage); //we are going to sleep so store the battery voltage
-            EEPROM.write(SLEEP_ADDRESS, 1); //write the sleep flag 1 immedietly when going to sleep. When waking up, set it to zero.
-            EEPROM.commit();
-            WiFi.mode(WIFI_OFF);
-            esp_wifi_stop();
-            disableInternalPower();
-            //adc_power_release();
-            //adc_power_off();
-            delay(10);
-            esp_sleep_enable_ext1_wakeup_io(BUTTON_PIN_BITMASK(WAKEUP_GPIO), ESP_EXT1_WAKEUP_ANY_HIGH);
-            esp_deep_sleep_start();
-          }
-          //if we get here its time to sleep but we are charging. Delay so this loop doesn't run at loop speed
-          delay(1000);
-          
+          Serial.println(zeroTime);
+          EEPROM.write(SLEEP_ADDRESS, 1); //write the sleep flag 1 immedietly when going to sleep. When waking up, set it to zero.
+          EEPROM.commit();
+          WiFi.mode(WIFI_OFF);
+          esp_wifi_stop();
+          disableInternalPower();
+          //adc_power_release();
+          //adc_power_off();
+          delay(10);
+          esp_sleep_enable_ext1_wakeup_io(BUTTON_PIN_BITMASK(WAKEUP_GPIO), ESP_EXT1_WAKEUP_ANY_HIGH);
+          esp_deep_sleep_start();          
         } 
       }  else{//pot went positive to don't go to sleep
         zeroFlag = false; //pot_input went positive so reset the flat
@@ -461,7 +468,6 @@ void loop() {
       if (currentMillis - lastUpdateBattMillis >= UPDATE_BATT_DELAY) { //check battery periodically and store it to eeprom
         lastUpdateBattMillis = currentMillis;
         CheckBattery();
-        storeFloatInEEPROM(FLOAT_ADDRESS,cell_voltage);
         last_cell_voltage=cell_voltage;
         #ifdef DEBUGBATTERY
           neopixel.setPixelColor(0, coral); //yellow
@@ -487,6 +493,16 @@ void loop() {
       }
 
       break;
+
+    case CHARGE:
+      //don't do anything while charging except fade LED
+      analogWrite(LED_PWR_PIN, brightness);
+      brightness = brightness + fadeAmount;
+      if (brightness <= 0 || brightness >= 255) {
+        fadeAmount = -fadeAmount;
+      }
+      delay(30);
+    break;
    
   }
 }
