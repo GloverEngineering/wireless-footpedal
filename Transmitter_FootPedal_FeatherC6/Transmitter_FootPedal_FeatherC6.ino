@@ -19,24 +19,27 @@
 //#define DEBUGPAIRING
 #define DEBUGBATTERY
 //#define DEBUGLED
-#define FWVERSION 0.5
+#define FIRST_RUN 1               //Flag to run some code to set EEPROM values store the very first time it is run
+#define FWVERSION 0.6
 #define POT_PIN A0
-#define CHANNEL 11                 //1-14
-#define UPDATE_BATT_DELAY 10000   //1 minute
-#define POT_SAMPLES 64               //5hz
-#define DATA_FREQ 10                //5hz
+#define CHANNEL 11                //1-14
+#define UPDATE_BATT_DELAY 60000  //Update battery values every 1 minute
+#define POT_SAMPLES 64            //Number of samples to averate
+#define DATA_FREQ 10              //e.g. 10hz
 #define KEEP_ALIVE_FREQ 1         //1 hz
 #define KEEP_ALIVE_TIME 5000      //5000 ms amount of time to switch from full speed transmit to keep_alive_time transmit 
-#define SLEEP_TIME 60000          // milliseconds. Change to 60 seconds or longer in the future
-#define PAIRING_BLINK_TIME 500    // blink fast when pairing
-#define CHARGE_BLINK_TIME 150     //blink real fast
+#define SLEEP_TIME 60000          //milliseconds for sleeping. Change to 60 seconds or longer in the future
+#define PAIRING_BLINK_TIME 500    //blink fast when pairing
+#define CHARGE_BLINK_TIME 200     //blink real fast
 #define BLUE (0,255,255) 
 #define LED_PWR_PIN 4
 #define WIRELESS_MAX 3200
 #define PAIRING_MAX 3100
 #define SLEEP_ADDRESS 8 //EEPROM address to store sleep flag bit. 0 if powe rup. 1 if sleeping
+#define FLOAT_ADDRESS 9
 #define DATA_MESSAGE 0    //message_type 0 is data
 #define PAIRING_MESSAGE 1 //message_type 1 is pairing
+#define CHARGE_VOLTAGE 3.7
 
 //NEOPIXEL_I2C_POWER IO20
 //PIN_NEOPIXEL IO9
@@ -106,6 +109,8 @@ bool charging = false; //flag to indicate if we are charging
 float cell_voltage; //global variable to store cell voltage
 float startup_cell_voltage;
 float charge_rate; //max17048 charge rate
+float last_cell_voltage;
+float new_cell_voltage;
 
 void pair(void){
   for(int i=0; i<sizeof(receiverAddress); i++){
@@ -233,6 +238,19 @@ void enableInternalPower() {
   digitalWrite(NEOPIXEL_I2C_POWER, HIGH);
 }
 
+// Function to store a float in EEPROM
+void storeFloatInEEPROM(int address, float value) {
+  EEPROM.put(address, value);
+  EEPROM.commit();
+}
+
+// Function to read a float from EEPROM
+float readFloatFromEEPROM(int address, float value) {
+  EEPROM.get(address, value);
+  Serial.print("readFromFloatInEEPROM: ");
+  Serial.println(value,3);
+  return value;
+}
 
 
 void setup() {
@@ -245,7 +263,7 @@ void setup() {
   Serial.println(FWVERSION);
 
   //EEPROM definition
-  EEPROM.begin(9); //actually only needed 7 bytes because mac address is 6. I was thinking it was 8. Need 1 extra byte to store the flag indicating if we are coming out of sleep or not
+  EEPROM.begin(64); //actually only needed 7 bytes because mac address is 6. I was thinking it was 8. Need 1 extra byte to store the flag indicating if we are coming out of sleep or not
 
   //pinmodes
   pinMode(led, OUTPUT);
@@ -263,7 +281,7 @@ void setup() {
   //now check to see if we should get into a pairing state based on user input. First check EEPROM to see if we are powering up or waking up
   if(EEPROM.read(SLEEP_ADDRESS) == 0){ //it will be 0 if starting from power up. It will be 255 if waking up. Don't try pairing if waking up because you press foot pedal to wake up so we could accidentily trigger pairing
     ReadInput();
-    Serial.println(pot_input);
+    //Serial.println(pot_input);
     if(pot_input>PAIRING_MAX){ //read input immedietly upon starting up - if foot pedal is pressed fully when powering on, enter pairing mode
       mode = PAIRING;
     }
@@ -302,9 +320,8 @@ void setup() {
     return;
   }
  
-
-  //Serial.println(esp_wifi_set_max_tx_power(8));
-  WiFi.setTxPower(WIFI_POWER_19dBm); //WIFI_POWER_2dBm WIFI_POWER_19dBm
+  WiFi.setTxPower(WIFI_POWER_13dBm); //WIFI_POWER_2dBm WIFI_POWER_19dBm 
+  Serial.print("Wifi Power: ");
   Serial.println(WiFi.getTxPower());
   
   //Register peer
@@ -326,10 +343,22 @@ void setup() {
   Serial.print(F("Found MAX17048"));
   Serial.print(F(" with Chip ID: 0x")); 
   Serial.println(maxlipo.getChipID(), HEX);
+  //maxlipo.quickStart();//auot-calibration. Not sure how bad this is
 
 //Read battery capacity and output that to the user via blinking the LEDs
+  Serial.print("eeprom in setup is:");
+  Serial.println(EEPROM.read(FLOAT_ADDRESS));
+  readFloatFromEEPROM(FLOAT_ADDRESS, cell_voltage);
+  //check if eeprom is initialized. Not sure if we need this. I think the NAN issue was old code from chatgpt
+  if(EEPROM.read(FLOAT_ADDRESS)==0xFF){ //eeprom hasn't been initialized IF =255. Set it to 5v
+    float temp = 5.0000;
+    storeFloatInEEPROM(FLOAT_ADDRESS,temp);
+    Serial.print("eeprom is was 0xFF. Here is the new value in Setup(), should be 5 ");
+    Serial.println(EEPROM.read(FLOAT_ADDRESS));
+  }
+  //only check battery capacity when in data mode, and not powering up from sleep
   if((EEPROM.read(SLEEP_ADDRESS)==0)&&(mode==DATA)){ //only do this if we are powering up (not sleep) and not in pairing mode
-    delay(500);
+    delay(800); //can't figure out why readings are bad. Maybe a startup delay will help
     CheckBattery(); //get the current cell voltage and battery capacity upon startup
     startup_cell_voltage = cell_voltage; //store the value
     int blink_times = foot_pedal_data.battery_level/10;
@@ -342,9 +371,12 @@ void setup() {
       digitalWrite(LED_PWR_PIN, !digitalRead(LED_PWR_PIN));
       delay(CHARGE_BLINK_TIME);
     }
+    digitalWrite(LED_PWR_PIN, 0);
+    delay(4*CHARGE_BLINK_TIME); //Pause twice the blink rate so you know its done
+    digitalWrite(LED_PWR_PIN, 1);  //Turn it back on
   }
   
-  EEPROM.write(SLEEP_ADDRESS, 0); //reset it back to zero
+  EEPROM.write(SLEEP_ADDRESS, 0); //reset the sleep flag bag to zero
   EEPROM.commit();
 
 }
@@ -396,30 +428,41 @@ void loop() {
             neopixel.show();
           #endif
         }
-        if (zeroTime >= (SLEEP_TIME + KEEP_ALIVE_TIME)){ //we have been at zero input for sleeptime plus the time before goign into keep alive. go to deep sleep if not charging
-          Serial.println(zeroTime);
-          Serial.println("going to deep sleep now...");
-          EEPROM.write(SLEEP_ADDRESS, 1); //write the sleep flag 1 immedietly when going to sleep. When waking up, set it to zero.
-          EEPROM.commit();
-          WiFi.mode(WIFI_OFF);
-          esp_wifi_stop();
-          disableInternalPower();
-          //adc_power_release();
-          //adc_power_off();
-          delay(10);
-          esp_sleep_enable_ext1_wakeup_io(BUTTON_PIN_BITMASK(WAKEUP_GPIO), ESP_EXT1_WAKEUP_ANY_HIGH);
-          esp_deep_sleep_start();
+        if (zeroTime >= (SLEEP_TIME + KEEP_ALIVE_TIME)){ //time to sleep: we have been at zero input for sleeptime plus the time before goign into keep alive. go to deep sleep if not charging
+          CheckBattery(); //get current battery values
+          Serial.print("Check to sleep. Cell voltage: ");
+          Serial.println(cell_voltage,3);
+          if(cell_voltage<CHARGE_VOLTAGE){//not charging: assume a very low %/hr charge rate just in case it goes positive. Seems to be bugs when connected to computer
+            Serial.println(zeroTime);
+            Serial.println("going to deep sleep now...");
+            storeFloatInEEPROM(FLOAT_ADDRESS,cell_voltage); //we are going to sleep so store the battery voltage
+            EEPROM.write(SLEEP_ADDRESS, 1); //write the sleep flag 1 immedietly when going to sleep. When waking up, set it to zero.
+            EEPROM.commit();
+            WiFi.mode(WIFI_OFF);
+            esp_wifi_stop();
+            disableInternalPower();
+            //adc_power_release();
+            //adc_power_off();
+            delay(10);
+            esp_sleep_enable_ext1_wakeup_io(BUTTON_PIN_BITMASK(WAKEUP_GPIO), ESP_EXT1_WAKEUP_ANY_HIGH);
+            esp_deep_sleep_start();
+          }
+          //if we get here its time to sleep but we are charging. Delay so this loop doesn't run at loop speed
+          delay(1000);
+          
         } 
-      }  else{
+      }  else{//pot went positive to don't go to sleep
         zeroFlag = false; //pot_input went positive so reset the flat
         sendFreq = DATA_FREQ;
         colorSuccess = green;
       }
       
       currentMillis = millis();
-      if (currentMillis - lastUpdateBattMillis >= UPDATE_BATT_DELAY) { //check battery every e.g. 60 seconds
+      if (currentMillis - lastUpdateBattMillis >= UPDATE_BATT_DELAY) { //check battery periodically and store it to eeprom
         lastUpdateBattMillis = currentMillis;
         CheckBattery();
+        storeFloatInEEPROM(FLOAT_ADDRESS,cell_voltage);
+        last_cell_voltage=cell_voltage;
         #ifdef DEBUGBATTERY
           neopixel.setPixelColor(0, coral); //yellow
           neopixel.show();
