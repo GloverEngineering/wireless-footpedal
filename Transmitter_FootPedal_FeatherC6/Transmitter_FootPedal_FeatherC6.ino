@@ -326,7 +326,7 @@ void setup() {
     return;
   }
  
-  WiFi.setTxPower(WIFI_POWER_13dBm); //WIFI_POWER_2dBm WIFI_POWER_19dBm 
+  WiFi.setTxPower(WIFI_POWER_19dBm); //WIFI_POWER_2dBm WIFI_POWER_19dBm 
   Serial.print("Wifi Power: ");
   Serial.println(WiFi.getTxPower());
   
@@ -495,6 +495,7 @@ void loop() {
       break;
 
     case CHARGE:
+      esp_now_unregister_recv_cb(); //unregister the callback function so we don't accidentily pair
       //don't do anything while charging except fade LED
       analogWrite(LED_PWR_PIN, brightness);
       brightness = brightness + fadeAmount;
